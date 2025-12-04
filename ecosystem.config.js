@@ -4,11 +4,11 @@ module.exports = {
       name: "controlplaga-app",
       script: "npm",
       args: "start",
-      port: 3007,
+      port: 3003,
       env: {
         NODE_ENV: "production",
-        PORT: 3007
-      }
-    }
-  ]
+        PORT: 3003,
+      },
+    },
+  ],
 };
