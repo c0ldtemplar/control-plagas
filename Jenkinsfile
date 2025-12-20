@@ -7,6 +7,7 @@ pipeline {
         INFRA_ROOT = '/var/www/infrastructure'
         APP_PORT = '3003' 
         SERVICE_NAME = 'controlplaga-app'
+        IMAGE_NAME = "coldtemplar478/controlplaga-app"
     }
     
     options {
@@ -17,42 +18,23 @@ pipeline {
     }
     
     stages {
-        stage('Clean Workspace') {
-            steps {
-                script {
-                    try {
-                        sh 'docker run --rm -v $(pwd):/app -w /app alpine rm -rf ./* || true'
-                    } catch (Exception e) {
-                        echo "⚠️ Falló la limpieza vía Docker, intentando método estándar..."
-                    }
-                    cleanWs()
-                }
-            }
-        }
-
         stage('Checkout') {
             steps {
+                cleanWs()
                 checkout scm
                 script {
-                    env.GIT_COMMIT_SHORT = sh(script: "git rev-parse --short HEAD", returnStdout: true).trim()
+                    env.IMAGE_TAG = sh(script: "git rev-parse --short HEAD", returnStdout: true).trim()
                 }
-                echo "🚀 Iniciando despliegue de Control Plagas (Commit: ${env.GIT_COMMIT_SHORT})"
+                echo "🚀 Iniciando despliegue de Control Plagas (Commit: ${env.IMAGE_TAG})"
             }
         }
         
-        stage('Update Source Code') {
+        stage('Build Image') {
             steps {
                 script {
-                    echo "🔄 Sincronizando código fuente con ${PROJECT_ROOT}..."
-                    sh """
-                        rsync -rlv --checksum --no-perms --no-owner --no-group \\
-                        --exclude='.git' \\
-                        --exclude='node_modules' \\
-                        --exclude='.next' \\
-                        --exclude='.env*' \\
-                        --exclude='test-results' \\
-                        ./ ${PROJECT_ROOT}/
-                    """
+                    echo "🐳 Construyendo la imagen local ${env.IMAGE_NAME}:${env.IMAGE_TAG}"
+                    sh "docker build -t ${env.IMAGE_NAME}:${env.IMAGE_TAG} --build-arg BUILDKIT_INLINE_CACHE=1 ."
+                    sh "docker tag ${env.IMAGE_NAME}:${env.IMAGE_TAG} ${env.IMAGE_NAME}:latest || true"
                 }
             }
         }
@@ -60,24 +42,13 @@ pipeline {
         stage('Deploy to Production') {
             steps {
                 script {
-                    echo "🐳 Reconstruyendo contenedor ${SERVICE_NAME}..."
-                    dir(INFRA_ROOT) {
-                        // Limpieza previa: detener y eliminar contenedor existente
-                        sh """
-                            docker stop ${SERVICE_NAME} || true
-                            docker rm ${SERVICE_NAME} || true
-                        """
-                        
-                        sh """
-                            docker compose -f docker-compose.ecosystem.yml --profile ondemand up -d --no-deps --build --force-recreate ${SERVICE_NAME}
-                        """
-                        
-                        // Limpieza de imágenes huérfanas y sin usar
-                        sh """
-                            docker image prune -f
-                            docker system prune -f --volumes || true
-                        """
-                    }
+                    echo "🚚 Desplegando ${env.IMAGE_NAME}:${env.IMAGE_TAG} en producción..."
+                    sh """
+                        cd ${INFRA_ROOT}
+                        export IMAGE_TAG=${env.IMAGE_TAG}
+                        docker compose -f docker-compose.ecosystem.yml --profile ondemand up -d --no-deps --build --force-recreate ${SERVICE_NAME}
+                        docker image prune -f
+                    """
                 }
             }
         }
@@ -103,6 +74,11 @@ pipeline {
         always {
             // Limpieza del workspace de Jenkins
             cleanWs()
+            script {
+                // Remove the locally built image from the Jenkins agent
+                sh "docker rmi ${env.IMAGE_NAME}:${env.IMAGE_TAG} || true"
+                sh "docker rmi ${env.IMAGE_NAME}:latest || true"
+            }
         }
         failure {
             echo '❌ El despliegue de Control Plagas falló.'
